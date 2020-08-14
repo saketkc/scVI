@@ -248,7 +248,7 @@ def log_zinb_positive(x, mu, theta, pi, eps=1e-8):
     return res
 
 
-def log_nb_positive(x, mu, theta, eps=1e-8):
+def log_nb_positive(x, mu, theta, eps=1e-8, per_gene=False):
     """Note: All inputs should be torch Tensors
     log likelihood (scalar) of a minibatch according to a nb model.
 
@@ -256,6 +256,7 @@ def log_nb_positive(x, mu, theta, eps=1e-8):
     mu: mean of the negative binomial (has to be positive support) (shape: minibatch x genes)
     theta: inverse dispersion parameter (has to be positive support) (shape: minibatch x genes)
     eps: numerical stability constant
+    per_gene: calculate ll per gene (default: False)
 
     """
     if theta.ndimension() == 1:
@@ -272,6 +273,8 @@ def log_nb_positive(x, mu, theta, eps=1e-8):
         - torch.lgamma(theta)
         - torch.lgamma(x + 1)
     )
+    if per_gene:
+        return torch.sum(res, dim=0)
 
     return res
 
