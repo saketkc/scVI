@@ -267,9 +267,9 @@ class Posterior:
     elbo.mode = "min"
 
     @torch.no_grad()
-    def reconstruction_error(self) -> torch.Tensor:
-        """Returns the reconstruction error associated to the object."""
-        reconstruction_error = compute_reconstruction_error(self.model, self)
+    def reconstruction_error(self, per_gene=False) -> torch.Tensor:
+        """Returns the reconstruction error associated to the object. XXXX"""
+        reconstruction_error = compute_reconstruction_error(self.model, self, per_gene=per_gene)
         logger.debug("Reconstruction Error : %.4f" % reconstruction_error)
         return reconstruction_error
 

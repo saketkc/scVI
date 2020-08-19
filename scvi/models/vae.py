@@ -19,6 +19,19 @@ from typing import Tuple, Dict
 
 torch.backends.cudnn.benchmark = True
 
+def gaussian_kernel(x, y):
+    xs = x.sample()
+    ys = y.sample()
+    loss = torch.exp(-((xs - ys)**2))
+    return loss
+
+def compute_mmd(x, y):
+    x_kernel = gaussian_kernel(x, x)
+    y_kernel = gaussian_kernel(y, y)
+    xy_kernel = gaussian_kernel(x, y)
+    mmd = x_kernel + y_kernel - 2*xy_kernel
+    return mmd
+
 
 # VAE model
 class VAE(nn.Module):
@@ -286,7 +299,7 @@ class VAE(nn.Module):
         return reconst_loss
 
     def inference(
-        self, x, batch_index=None, y=None, n_samples=1, transform_batch=None
+        self, x, batch_index=None, y=None, n_samples=1, transform_batch=None, **kwargs
     ) -> Dict[str, torch.Tensor]:
         """Helper function used in forward pass
         """
@@ -382,6 +395,7 @@ class VAE(nn.Module):
         kl_divergence_z = kl(Normal(qz_m, torch.sqrt(qz_v)), Normal(mean, scale)).sum(
             dim=1
         )
+        #print("kl divergence shape: {}".format(kl_divergence_z.shape))
         kl_divergence_l = kl(
             Normal(ql_m, torch.sqrt(ql_v)),
             Normal(local_l_mean, torch.sqrt(local_l_var)),
@@ -470,7 +484,7 @@ class LDVAE(VAE):
             dispersion,
             log_variational,
             reconstruction_loss,
-            latent_distribution,
+            latent_distribution
         )
         self.use_batch_norm = use_batch_norm
         self.z_encoder = Encoder(
@@ -509,3 +523,172 @@ class LDVAE(VAE):
             loadings = loadings[:, : -self.n_batch]
 
         return loadings
+
+
+class VAEMMD(VAE):
+    def __init__(
+        self,
+        n_input: int,
+        n_batch: int = 0,
+        n_labels: int = 0,
+        n_hidden: int = 128,
+        n_latent: int = 10,
+        n_layers: int = 1,
+        dropout_rate: float = 0.1,
+        dispersion: str = "gene",
+        log_variational: bool = True,
+        reconstruction_loss: str = "zinb",
+        latent_distribution: str = "normal",
+    ):
+        super().__init__(
+            n_input,
+            n_batch,
+            n_labels,
+            n_hidden,
+            n_latent,
+            n_layers,
+            dropout_rate,
+            dispersion,
+            log_variational,
+            reconstruction_loss,
+            latent_distribution
+        )
+
+    def forward(
+        self, x, local_l_mean, local_l_var, batch_index=None, y=None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Returns the reconstruction loss and the KL divergences
+
+        Parameters
+        ----------
+        x
+            tensor of values with shape (batch_size, n_input)
+        local_l_mean
+            tensor of means of the prior distribution of latent variable l
+            with shape (batch_size, 1)
+        local_l_var
+            tensor of variancess of the prior distribution of latent variable l
+            with shape (batch_size, 1)
+        batch_index
+            array that indicates which batch the cells belong to with shape ``batch_size`` (Default value = None)
+        y
+            tensor of cell-types labels with shape (batch_size, n_labels) (Default value = None)
+
+        Returns
+        -------
+        type
+            the reconstruction loss and the Kullback divergences
+
+        """
+        # Parameters for z latent distribution
+        outputs = self.inference(x, batch_index, y)
+        qz_m = outputs["qz_m"]
+        qz_v = outputs["qz_v"]
+        ql_m = outputs["ql_m"]
+        ql_v = outputs["ql_v"]
+        px_rate = outputs["px_rate"]
+        px_r = outputs["px_r"]
+        px_dropout = outputs["px_dropout"]
+
+        # KL Divergence
+        mean = torch.zeros_like(qz_m)
+        scale = torch.ones_like(qz_v)
+
+        kl_divergence_z = compute_mmd(Normal(qz_m, torch.sqrt(qz_v)), Normal(mean, scale)).sum(
+            dim=1
+        )
+        kl_divergence_l = compute_mmd(
+            Normal(ql_m, torch.sqrt(ql_v)),
+            Normal(local_l_mean, torch.sqrt(local_l_var)),
+        ).sum(dim=1)
+        kl_divergence = kl_divergence_z
+
+        reconst_loss = self.get_reconstruction_loss(x, px_rate, px_r, px_dropout)
+
+        return reconst_loss + kl_divergence_l, kl_divergence, 0.0
+
+class LDVAEMMD(LDVAE):
+    def __init__(
+        self,
+        n_input: int,
+        n_batch: int = 0,
+        n_labels: int = 0,
+        n_hidden: int = 128,
+        n_latent: int = 10,
+        n_layers_encoder: int = 1,
+        dropout_rate: float = 0.1,
+        dispersion: str = "gene",
+        log_variational: bool = True,
+        reconstruction_loss: str = "nb",
+        use_batch_norm: bool = True,
+        bias: bool = False,
+        latent_distribution: str = "normal",
+    ):
+        super().__init__(
+            n_input,
+            n_batch,
+            n_labels,
+            n_hidden,
+            n_latent,
+            n_layers_encoder,
+            dropout_rate,
+            dispersion,
+            log_variational,
+            reconstruction_loss,
+            use_batch_norm,
+            bias,
+            latent_distribution,
+        )
+
+    def forward(
+        self, x, local_l_mean, local_l_var, batch_index=None, y=None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Returns the reconstruction loss and the KL divergences
+
+        Parameters
+        ----------
+        x
+            tensor of values with shape (batch_size, n_input)
+        local_l_mean
+            tensor of means of the prior distribution of latent variable l
+            with shape (batch_size, 1)
+        local_l_var
+            tensor of variancess of the prior distribution of latent variable l
+            with shape (batch_size, 1)
+        batch_index
+            array that indicates which batch the cells belong to with shape ``batch_size`` (Default value = None)
+        y
+            tensor of cell-types labels with shape (batch_size, n_labels) (Default value = None)
+
+        Returns
+        -------
+        type
+            the reconstruction loss and the Kullback divergences
+
+        """
+        # Parameters for z latent distribution
+        outputs = self.inference(x, batch_index, y)
+        qz_m = outputs["qz_m"]
+        qz_v = outputs["qz_v"]
+        ql_m = outputs["ql_m"]
+        ql_v = outputs["ql_v"]
+        px_rate = outputs["px_rate"]
+        px_r = outputs["px_r"]
+        px_dropout = outputs["px_dropout"]
+
+        # KL Divergence
+        mean = torch.zeros_like(qz_m)
+        scale = torch.ones_like(qz_v)
+
+        kl_divergence_z = compute_mmd(Normal(qz_m, torch.sqrt(qz_v)), Normal(mean, scale)).sum(
+            dim=1
+        )
+        kl_divergence_l = compute_mmd(
+            Normal(ql_m, torch.sqrt(ql_v)),
+            Normal(local_l_mean, torch.sqrt(local_l_var)),
+        ).sum(dim=1)
+        kl_divergence = kl_divergence_z
+
+        reconst_loss = self.get_reconstruction_loss(x, px_rate, px_r, px_dropout)
+
+        return reconst_loss + kl_divergence_l, kl_divergence, 0.0
