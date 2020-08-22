@@ -226,6 +226,7 @@ class Encoder(nn.Module):
 
         # Parameters for latent distribution
         q = self.encoder(x, *cat_list)
+        #print("Inide Encoder {}".format(x.shape))
         q_m = self.mean_encoder(q)
         q_v = torch.exp(self.var_encoder(q)) + 1e-4
         latent = self.z_transformation(reparameterize_gaussian(q_m, q_v))
@@ -907,3 +908,50 @@ class EncoderTOTALVI(nn.Module):
         untran_latent["l"] = log_library_gene
 
         return qz_m, qz_v, ql_m, ql_v, latent, untran_latent
+
+class LinearDecoderSCVICentered(nn.Module):
+    def __init__(
+        self,
+        n_input: int,
+        n_output: int,
+        n_cat_list: Iterable[int] = None,
+        use_batch_norm: bool = True,
+        bias: bool = False,
+    ):
+        super(LinearDecoderSCVI, self).__init__()
+
+        # mean gamma
+        self.factor_regressor = FCLayers(
+            n_in=n_input,
+            n_out=n_output,
+            n_cat_list=n_cat_list,
+            n_layers=1,
+            use_relu=False,
+            use_batch_norm=use_batch_norm,
+            bias=bias,
+            dropout_rate=0,
+        )
+
+        # dropout
+        self.px_dropout_decoder = FCLayers(
+            n_in=n_input,
+            n_out=n_output,
+            n_cat_list=n_cat_list,
+            n_layers=1,
+            use_relu=False,
+            use_batch_norm=use_batch_norm,
+            bias=bias,
+            dropout_rate=0,
+        )
+
+    def forward(
+        self, dispersion: str, z: torch.Tensor, library: torch.Tensor, *cat_list: int
+    ):
+        # The decoder returns values for the parameters of the ZINB distribution
+        raw_px_scale = self.factor_regressor(z, *cat_list)
+        px_scale = torch.softmax(raw_px_scale, dim=-1)
+        px_dropout = self.px_dropout_decoder(z, *cat_list)
+        px_rate = torch.exp(library) * px_scale
+        px_r = None
+
+        return px_scale, px_r, px_rate, px_dropout
