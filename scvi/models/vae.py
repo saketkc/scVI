@@ -287,9 +287,14 @@ class VAE(nn.Module):
     ) -> torch.Tensor:
         # Reconstruction Loss
         px_rate_ = px_rate
+
+        if self.adjust_gene_counts:
+            gene_mean = torch.mean(x, dim=0)
+            px_rate_ = torch.exp(torch.log(px_rate_+1e-8) - torch.log(gene_mean+1e-8))
         if self.adjust_cell_counts:
-            cell_mean = torch.mean(x, dim=0)
-            px_rate_ = torch.exp(torch.log(px_rate+1e-8) - torch.log(cell_mean+1e-8))
+            cell_mean = torch.mean(x, dim=1)
+            px_rate_ = torch.exp(torch.log(px_rate_+1e-8) - torch.log(cell_mean+1e-8)[:, None])
+
         if self.reconstruction_loss == "zinb":
             reconst_loss = (
                 -ZeroInflatedNegativeBinomial(
