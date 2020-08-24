@@ -909,7 +909,7 @@ class EncoderTOTALVI(nn.Module):
 
         return qz_m, qz_v, ql_m, ql_v, latent, untran_latent
 
-class LinearDecoderSCVICentered(nn.Module):
+class LinearDecoderSCVIGene(nn.Module):
     def __init__(
         self,
         n_input: int,
@@ -917,9 +917,12 @@ class LinearDecoderSCVICentered(nn.Module):
         n_cat_list: Iterable[int] = None,
         use_batch_norm: bool = True,
         bias: bool = False,
+        gene_mean: torch.Tensor = torch.Tensor([1]),
+        cell_mean: torch.Tensor = torch.Tensor([1]),
     ):
-        super(LinearDecoderSCVI, self).__init__()
-
+        super(LinearDecoderSCVIGene, self).__init__()
+        self.gene_mean = gene_mean
+        self.cell_mean = cell_mean
         # mean gamma
         self.factor_regressor = FCLayers(
             n_in=n_input,
@@ -951,7 +954,197 @@ class LinearDecoderSCVICentered(nn.Module):
         raw_px_scale = self.factor_regressor(z, *cat_list)
         px_scale = torch.softmax(raw_px_scale, dim=-1)
         px_dropout = self.px_dropout_decoder(z, *cat_list)
-        px_rate = torch.exp(library) * px_scale
+        px_rate = torch.exp(library) * px_scale * torch.exp(self.gene_mean) #* torch.exp(self.cell_mean)
         px_r = None
 
+        return px_scale, px_r, px_rate, px_dropout
+
+class DecoderSCVIGene(nn.Module):
+    """Decodes data from latent space of ``n_input`` dimensions ``n_output``
+    dimensions using a fully-connected neural network of ``n_hidden`` layers.
+
+    Parameters
+    ----------
+    n_input
+        The dimensionality of the input (latent space)
+    n_output
+        The dimensionality of the output (data space)
+    n_cat_list
+        A list containing the number of categories
+        for each category of interest. Each category will be
+        included using a one-hot encoding
+    n_layers
+        The number of fully-connected hidden layers
+    n_hidden
+        The number of nodes per hidden layer
+    dropout_rate
+        Dropout rate to apply to each of the hidden layers
+
+    Returns
+    -------
+    """
+
+    def __init__(
+        self,
+        n_input: int,
+        n_output: int,
+        n_cat_list: Iterable[int] = None,
+        n_layers: int = 1,
+        n_hidden: int = 128,
+        gene_mean: torch.Tensor = torch.Tensor([1]),
+    ):
+        super().__init__()
+        self.px_decoder = FCLayers(
+            n_in=n_input,
+            n_out=n_hidden,
+            n_cat_list=n_cat_list,
+            n_layers=n_layers,
+            n_hidden=n_hidden,
+            dropout_rate=0,
+        )
+        self.gene_mean = gene_mean
+
+        # mean gamma
+        self.px_scale_decoder = nn.Sequential(
+            nn.Linear(n_hidden, n_output), nn.Softmax(dim=-1)
+        )
+
+        # dispersion: here we only deal with gene-cell dispersion case
+        self.px_r_decoder = nn.Linear(n_hidden, n_output)
+
+        # dropout
+        self.px_dropout_decoder = nn.Linear(n_hidden, n_output)
+
+    def forward(
+        self, dispersion: str, z: torch.Tensor, library: torch.Tensor, *cat_list: int
+    ):
+        """The forward computation for a single sample.
+
+         #. Decodes the data from the latent space using the decoder network
+         #. Returns parameters for the ZINB distribution of expression
+         #. If ``dispersion != 'gene-cell'`` then value for that param will be ``None``
+
+        Parameters
+        ----------
+        dispersion
+            One of the following
+
+            * ``'gene'`` - dispersion parameter of NB is constant per gene across cells
+            * ``'gene-batch'`` - dispersion can differ between different batches
+            * ``'gene-label'`` - dispersion can differ between different labels
+            * ``'gene-cell'`` - dispersion can differ for every gene in every cell
+        z :
+            tensor with shape ``(n_input,)``
+        library
+            library size
+        cat_list
+            list of category membership(s) for this sample
+
+        Returns
+        -------
+        4-tuple of :py:class:`torch.Tensor`
+            parameters for the ZINB distribution of expression
+        """
+        # The decoder returns values for the parameters of the ZINB distribution
+        px = self.px_decoder(z, *cat_list)
+        px_scale = self.px_scale_decoder(px)
+        px_dropout = self.px_dropout_decoder(px)
+        # Clamp to high value: exp(12) ~ 160000 to avoid nans (computational stability)
+        px_rate = torch.exp(library) * px_scale * self.gene_mean  # torch.clamp( , max=12)
+        px_r = self.px_r_decoder(px) if dispersion == "gene-cell" else None
+        return px_scale, px_r, px_rate, px_dropout
+
+class DecoderSCVIGene2(nn.Module):
+    """Decodes data from latent space of ``n_input`` dimensions ``n_output``
+    dimensions using a fully-connected neural network of ``n_hidden`` layers.
+
+    Parameters
+    ----------
+    n_input
+        The dimensionality of the input (latent space)
+    n_output
+        The dimensionality of the output (data space)
+    n_cat_list
+        A list containing the number of categories
+        for each category of interest. Each category will be
+        included using a one-hot encoding
+    n_layers
+        The number of fully-connected hidden layers
+    n_hidden
+        The number of nodes per hidden layer
+    dropout_rate
+        Dropout rate to apply to each of the hidden layers
+
+    Returns
+    -------
+    """
+
+    def __init__(
+        self,
+        n_input: int,
+        n_output: int,
+        n_cat_list: Iterable[int] = None,
+        n_layers: int = 1,
+        n_hidden: int = 128,
+        gene_mean: torch.Tensor = torch.Tensor([1]),
+    ):
+        super().__init__()
+        self.px_decoder = FCLayers(
+            n_in=n_input,
+            n_out=n_hidden,
+            n_cat_list=n_cat_list,
+            n_layers=n_layers,
+            n_hidden=n_hidden,
+            dropout_rate=0,
+        )
+        self.gene_mean = gene_mean
+
+        # mean gamma
+        self.px_scale_decoder = nn.Sequential(
+            nn.Linear(n_hidden, n_output), nn.Softmax(dim=-1)
+        )
+
+        # dispersion: here we only deal with gene-cell dispersion case
+        self.px_r_decoder = nn.Linear(n_hidden, n_output)
+
+        # dropout
+        self.px_dropout_decoder = nn.Linear(n_hidden, n_output)
+
+    def forward(
+        self, dispersion: str, z: torch.Tensor, library: torch.Tensor, *cat_list: int
+    ):
+        """The forward computation for a single sample.
+
+         #. Decodes the data from the latent space using the decoder network
+         #. Returns parameters for the ZINB distribution of expression
+         #. If ``dispersion != 'gene-cell'`` then value for that param will be ``None``
+
+        Parameters
+        ----------
+        dispersion
+            One of the following
+
+            * ``'gene'`` - dispersion parameter of NB is constant per gene across cells
+            * ``'gene-batch'`` - dispersion can differ between different batches
+            * ``'gene-label'`` - dispersion can differ between different labels
+            * ``'gene-cell'`` - dispersion can differ for every gene in every cell
+        z :
+            tensor with shape ``(n_input,)``
+        library
+            library size
+        cat_list
+            list of category membership(s) for this sample
+
+        Returns
+        -------
+        4-tuple of :py:class:`torch.Tensor`
+            parameters for the ZINB distribution of expression
+        """
+        # The decoder returns values for the parameters of the ZINB distribution
+        px = self.px_decoder(z, *cat_list)
+        px_scale = self.px_scale_decoder(px)
+        px_dropout = self.px_dropout_decoder(px)
+        # Clamp to high value: exp(12) ~ 160000 to avoid nans (computational stability)
+        px_rate = torch.exp(library) * px_scale * torch.exp(self.gene_mean)  # torch.clamp( , max=12)
+        px_r = self.px_r_decoder(px) if dispersion == "gene-cell" else None
         return px_scale, px_r, px_rate, px_dropout
